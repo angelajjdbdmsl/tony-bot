@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 d = importlib.import_module("disc" + "ord")
-importlib.import_module("disc" + "ord.ext.commands")
+app_commands = d.app_commands
 commands = d.ext.commands
 
 load_dotenv()
