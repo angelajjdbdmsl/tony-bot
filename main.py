@@ -1,271 +1,205 @@
-import os
-import sqlite3
-import io
-import importlib
-from datetime import datetime, timezone
-from dotenv import load_dotenv
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FF CLONE — Battle Royale</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0a0a0c;overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;color:#f3f3f6}
+  canvas{display:block}
+  #hud{position:fixed;inset:0;pointer-events:none;padding:18px}
+  .bar{width:240px;height:14px;background:#000;border:1px solid #333;overflow:hidden}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,#ff6a00,#ffa500);transition:width .12s}
+  #hpRow{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  #hpTxt{font-size:12px;font-weight:800;letter-spacing:1px}
+  #top{display:flex;gap:22px;font-size:12px;letter-spacing:2px;text-transform:uppercase}
+  #top b{color:#ffa500;font-size:16px}
+  #zoneTxt{position:fixed;top:18px;left:50%;transform:translateX(-50%);font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#ffa500}
+  #msg{position:fixed;inset:0;display:grid;place-items:center;background:rgba(5,5,8,.88);text-align:center;padding:24px}
+  #msg.hidden{display:none}
+  #msg h1{font-size:34px;letter-spacing:6px;text-transform:uppercase;margin-bottom:10px}
+  #msg p{color:#8b8b96;font-size:13px;line-height:1.9;margin-bottom:22px}
+  #msg kbd{background:#1a1a20;border:1px solid #333;padding:2px 7px;font-family:inherit;font-size:12px}
+  #msg button{background:linear-gradient(140deg,#ff6a00,#ffa500);color:#0a0a0c;border:none;font-weight:900;letter-spacing:2px;text-transform:uppercase;padding:14px 34px;cursor:pointer;clip-path:polygon(10% 0,100% 0,90% 100%,0 100%)}
+  #msg button:hover{filter:brightness(1.15)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div id="hpRow"><div class="bar"><i id="hpBar" style="width:100%"></i></div><span id="hpTxt">100</span></div>
+  <div id="top"><span>Kills <b id="kills">0</b></span><span>Vivos <b id="alive">0</b></span><span>Balas <b id="ammo">∞</b></span></div>
+</div>
+<div id="zoneTxt">La zona se cierra</div>
+<div id="msg">
+  <div>
+    <h1 id="mTitle">FF CLONE</h1>
+    <p id="mText"><kbd>WASD</kbd> mover · <kbd>Ratón</kbd> apuntar · <kbd>Clic</kbd> disparar<br>Sobrevive a los bots y a la zona que se cierra.</p>
+    <button id="start">Empezar</button>
+  </div>
+</div>
+<script>
+(() => {
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W, H;
+  const resize = () => { W = cv.width = innerWidth; H = cv.height = innerHeight; };
+  addEventListener('resize', resize); resize();
 
-d = importlib.import_module("disc" + "ord")
-app_commands = d.app_commands
-commands = d.ext.commands
+  const keys = {};
+  const mouse = { x: 0, y: 0 };
+  let running = false, t = 0, last = 0;
 
-load_dotenv()
-TOKEN = os.getenv("DISC" + "ORD_TOKEN", "")
-GUILD_ID = os.getenv("GUILD_ID")
-DB = "escuadra.db"
+  const P = { x: 0, y: 0, r: 14, hp: 100, kills: 0, cool: 0, speed: 210 };
+  let bots = [], bullets = [], meds = [], zone = null;
 
-RANKS = ["Bronce", "Plata", "Oro", "Platino", "Diamante", "Heroico", "Gran Maestro"]
-RANK_COLOR = {
-    "Bronce": 0x8C5A2B, "Plata": 0xB8B8C0, "Oro": 0xFFC300, "Platino": 0x00C2C7,
-    "Diamante": 0x4B7BFF, "Heroico": 0x9B30FF, "Gran Maestro": 0xFF6A00,
-}
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
-def con():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    return c
+  addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
+  addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+  addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+  addEventListener('mousedown', () => { if (running) shoot(); });
 
-def init_db():
-    with con() as c:
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS players(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            nick TEXT NOT NULL,
-            uid TEXT NOT NULL,
-            lvl INTEGER DEFAULT 1,
-            rank TEXT DEFAULT 'Bronce',
-            kd REAL DEFAULT 0,
-            wr INTEGER DEFAULT 0,
-            fav INTEGER DEFAULT 0,
-            created_by INTEGER,
-            created_at TEXT
-        )""")
+  function shoot() {
+    if (P.cool > 0) return;
+    P.cool = 0.11;
+    const a = Math.atan2(mouse.y - P.y, mouse.x - P.x);
+    bullets.push({ x: P.x, y: P.y, vx: Math.cos(a) * 760, vy: Math.sin(a) * 760, life: 1.3, own: 'p' });
+  }
 
-def add_player(gid, nick, uid, lvl, rank, kd, wr, by):
-    with con() as c:
-        c.execute(
-            "INSERT INTO players(guild_id,nick,uid,lvl,rank,kd,wr,created_by,created_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
-            (gid, nick, uid, lvl, rank, kd, wr, by, datetime.now(timezone.utc).isoformat()),
-        )
+  function spawnBot() {
+    const a = rand(0, Math.PI * 2), d = rand(380, 640);
+    bots.push({
+      x: W / 2 + Math.cos(a) * d, y: H / 2 + Math.sin(a) * d,
+      r: 13, hp: 100, cool: rand(0.4, 1.4), speed: rand(78, 118),
+      drift: rand(0, 6.28), acc: 0.6 + Math.random() * 0.5
+    });
+  }
 
-def get_players(gid, only_fav=False, search=None):
-    q = "SELECT * FROM players WHERE guild_id=?"
-    args = [gid]
-    if only_fav:
-        q += " AND fav=1"
-    if search:
-        q += " AND (nick LIKE ? OR uid LIKE ?)"
-        args += [f"%{search}%", f"%{search}%"]
-    q += " ORDER BY fav DESC, kd DESC LIMIT 25"
-    with con() as c:
-        return c.execute(q, args).fetchall()
+  function reset() {
+    P.x = W / 2; P.y = H / 2; P.hp = 100; P.kills = 0; P.cool = 0;
+    bots = []; bullets = []; meds = [];
+    zone = { x: W / 2, y: H / 2, r: Math.max(W, H) * 0.62, tr: 130, timer: 26 };
+    for (let i = 0; i < 8; i++) spawnBot();
+    for (let i = 0; i < 5; i++) meds.push({ x: rand(80, W - 80), y: rand(80, H - 80), r: 10, t: 0 });
+    t = 0;
+  }
 
-def get_player(pid, gid):
-    with con() as c:
-        return c.execute(
-            "SELECT * FROM players WHERE id=? AND guild_id=?", (pid, gid)
-        ).fetchone()
+  function hud() {
+    document.getElementById('hpBar').style.width = Math.max(0, P.hp) + '%';
+    document.getElementById('hpTxt').textContent = Math.max(0, Math.round(P.hp));
+    document.getElementById('kills').textContent = P.kills;
+    document.getElementById('alive').textContent = bots.length + 1;
+    document.getElementById('zoneTxt').textContent = zone.timer > 0
+      ? 'La zona se cierra en ' + Math.ceil(zone.timer) + 's'
+      : '¡Fuera de la zona!';
+  }
 
-def delete_player(pid, gid):
-    with con() as c:
-        c.execute("DELETE FROM players WHERE id=? AND guild_id=?", (pid, gid))
+  function over(win) {
+    running = false;
+    const m = document.getElementById('msg');
+    m.classList.remove('hidden');
+    document.getElementById('mTitle').textContent = win ? 'BOOYAH' : 'ELIMINADO';
+    document.getElementById('mText').innerHTML = win
+      ? 'Ganaste la partida con <b>' + P.kills + '</b> bajas.'
+      : 'Quedaste con <b>' + P.kills + '</b> bajas.';
+    document.getElementById('start').textContent = 'Reintentar';
+  }
 
-def toggle_fav(pid, gid):
-    with con() as c:
-        c.execute("UPDATE players SET fav = 1 - fav WHERE id=? AND guild_id=?", (pid, gid))
-        row = c.execute("SELECT fav FROM players WHERE id=? AND guild_id=?", (pid, gid)).fetchone()
-        return row[0] if row else 0
+  function update(dt) {
+    t += dt;
+    P.cool -= dt;
 
-def guild_stats(gid):
-    with con() as c:
-        return c.execute(
-            "SELECT COUNT(*) n, AVG(kd) kd, AVG(wr) wr, MAX(kd) top FROM players WHERE guild_id=?",
-            (gid,),
-        ).fetchone()
+    // movimiento jugador
+    let dx = 0, dy = 0;
+    if (keys['w'] || keys['arrowup']) dy--;
+    if (keys['s'] || keys['arrowdown']) dy++;
+    if (keys['a'] || keys['arrowleft']) dx--;
+    if (keys['d'] || keys['arrowright']) dx++;
+    const len = Math.hypot(dx, dy) || 1;
+    P.x += (dx / len) * P.speed * dt;
+    P.y += (dy / len) * P.speed * dt;
+    P.x = Math.max(P.r, Math.min(W - P.r, P.x));
+    P.y = Math.max(P.r, Math.min(H - P.r, P.y));
 
-def player_embed(p: sqlite3.Row) -> d.Embed:
-    e = d.Embed(
-        title=f"{'★ ' if p['fav'] else ''}{p['nick']}",
-        color=RANK_COLOR.get(p["rank"], 0xFF6A00),
-    )
-    e.add_field(name="ID", value=p["uid"], inline=True)
-    e.add_field(name="Nivel", value=p["lvl"], inline=True)
-    e.add_field(name="Rango", value=p["rank"], inline=True)
-    e.add_field(name="K/D", value=f"{p['kd']:.2f}", inline=True)
-    e.add_field(name="Winrate", value=f"{p['wr']}%", inline=True)
-    e.set_footer(text=f"Registro #{p['id']}")
-    return e
+    // zona
+    if (zone.timer > 0) zone.timer -= dt;
+    else {
+      zone.r += (zone.tr - zone.r) * Math.min(1, dt * 0.35);
+      if (zone.timer < -14) { zone.timer = 26; zone.tr = Math.max(70, zone.tr * 0.72); }
+    }
+    if (dist(P, zone) > zone.r) P.hp -= 9 * dt;
 
-def list_embed(rows, title) -> d.Embed:
-    e = d.Embed(title=title, color=0xFF6A00)
-    if not rows:
-        e.description = "No hay jugadores registrados todavía."
-        return e
-    e.description = "\n".join(
-        f"`#{p['id']}` {'★' if p['fav'] else ''}**{p['nick']}** · ID {p['uid']}"
-        f" · {p['rank']} · K/D {p['kd']:.2f} · WR {p['wr']}%"
-        for p in rows
-    )
-    e.set_footer(text=f"{len(rows)} jugador(es) mostrados")
-    return e
+    // bots
+    for (const b of bots) {
+      const d = dist(b, P);
+      b.cool -= dt;
+      if (d < 460) {
+        const a = Math.atan2(P.y - b.y, P.x - b.x);
+        b.x += Math.cos(a) * b.speed * dt;
+        b.y += Math.sin(a) * b.speed * dt;
+        if (b.cool <= 0) {
+          b.cool = rand(0.45, 0.95);
+          const jit = rand(-0.16, 0.16);
+          bullets.push({
+            x: b.x, y: b.y, vx: Math.cos(a + jit) * 520, vy: Math.sin(a + jit) * 520,
+            life: 1.4, own: 'b', dmg: 8 * b.acc
+          });
+        }
+      } else {
+        b.drift += rand(-0.4, 0.4);
+        b.x += Math.cos(b.drift) * b.speed * 0.5 * dt;
+        b.y += Math.sin(b.drift) * b.speed * 0.5 * dt;
+      }
+      b.x = Math.max(b.r, Math.min(W - b.r, b.x));
+      b.y = Math.max(b.r, Math.min(H - b.r, b.y));
+      if (dist(b, zone) > zone.r) b.hp -= 9 * dt;
+    }
 
-def stats_embed(s) -> d.Embed:
-    e = d.Embed(title="Estadísticas de la escuadra", color=0xFFA500)
-    e.add_field(name="Jugadores", value=s["n"] or 0)
-    e.add_field(name="K/D medio", value=f"{s['kd'] or 0:.2f}")
-    e.add_field(name="Winrate medio", value=f"{s['wr'] or 0:.0f}%")
-    e.add_field(name="Mejor K/D", value=f"{s['top'] or 0:.2f}")
-    return e
+    // balas
+    for (const bl of bullets) {
+      bl.x += bl.vx * dt; bl.y += bl.vy * dt; bl.life -= dt;
+      if (bl.own === 'p') {
+        for (const b of bots) {
+          if (dist(bl, b) < b.r + 3) { b.hp -= 24; bl.life = 0; break; }
+        }
+      } else if (dist(bl, P) < P.r + 3) {
+        P.hp -= bl.dmg; bl.life = 0;
+      }
+      if (bl.x < 0 || bl.y < 0 || bl.x > W || bl.y > H) bl.life = 0;
+    }
+    bullets = bullets.filter(b => b.life > 0);
 
-class AddPlayerModal(d.ui.Modal, title="Nuevo jugador"):
-    nick = d.ui.TextInput(label="Nickname", max_length=18)
-    uid = d.ui.TextInput(label="ID", max_length=12)
-    lvl = d.ui.TextInput(label="Nivel (1-100)", default="1", max_length=3)
-    kd = d.ui.TextInput(label="K/D", default="1.00", max_length=5)
-    wr = d.ui.TextInput(label="Winrate % (0-100)", default="0", max_length=3)
+    // bajas
+    const before = bots.length;
+    bots = bots.filter(b => {
+      if (b.hp > 0) return true;
+      P.kills++;
+      if (Math.random() < 0.55) meds.push({ x: b.x, y: b.y, r: 10, t: 0 });
+      return false;
+    });
+    if (bots.length < before && bots.length > 0 && t > 3) spawnBot();
 
-    def __init__(self, rank: str = "Bronce"):
-        super().__init__()
-        self.rank = rank
+    // botiquines
+    for (const m of meds) {
+      m.t += dt;
+      if (dist(m, P) < P.r + m.r && P.hp < 100) {
+        P.hp = Math.min(100, P.hp + 28);
+        m.t = 99;
+      }
+    }
+    meds = meds.filter(m => m.t < 99);
 
-    async def on_submit(self, it: d.Interaction):
-        def num(v, cast, default):
-            try:
-                return cast(v)
-            except ValueError:
-                return default
-        add_player(
-            it.guild_id, self.nick.value.strip(), self.uid.value.strip(),
-            max(1, min(100, num(self.lvl.value, int, 1))), self.rank,
-            max(0.0, num(self.kd.value, float, 0.0)),
-            max(0, min(100, num(self.wr.value, int, 0))),
-            it.user.id,
-        )
-        await it.response.send_message(
-            f"Jugador **{self.nick.value}** añadido en {self.rank}.", ephemeral=True
-        )
+    if (P.hp <= 0) return over(false);
+    if (!bots.length) return over(true);
+  }
 
-class RankSelect(d.ui.Select):
-    def __init__(self):
-        super().__init__(placeholder="Elige el rango del jugador", options=[
-            d.SelectOption(label=r) for r in RANKS
-        ])
-    async def callback(self, it: d.Interaction):
-        await it.response.send_modal(AddPlayerModal(self.values[0]))
+  function draw() {
+    ctx.fillStyle = '#0d0f12';
+    ctx.fillRect(0, 0, W, H);
 
-class RankView(d.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
-        self.add_item(RankSelect())
-
-class DeleteSelect(d.ui.Select):
-    def __init__(self, rows):
-        super().__init__(placeholder="Selecciona jugador(es) a borrar",
-                         max_values=min(len(rows), 25),
-                         options=[
-                             d.SelectOption(
-                                 label=f"{p['nick']} — ID {p['uid']}",
-                                 value=str(p["id"]), description=p["rank"],
-                             ) for p in rows
-                         ])
-    async def callback(self, it: d.Interaction):
-        for pid in self.values:
-            delete_player(int(pid), it.guild_id)
-        await it.response.edit_message(
-            content=f"Eliminados {len(self.values)} jugador(es).", embed=None, view=None
-        )
-
-class PanelView(d.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @d.ui.button(label="Añadir", emoji="➕", style=d.ButtonStyle.success, custom_id="ff:add")
-    async def add(self, it: d.Interaction, _):
-        await it.response.send_message("Elige el rango:", view=RankView(), ephemeral=True)
-
-    @d.ui.button(label="Lista", emoji="📋", style=d.ButtonStyle.primary, custom_id="ff:list")
-    async def lst(self, it: d.Interaction, _):
-        rows = get_players(it.guild_id)
-        await it.response.send_message(embed=list_embed(rows, "Escuadra"), ephemeral=True)
-
-    @d.ui.button(label="Favoritos", emoji="★", style=d.ButtonStyle.secondary, custom_id="ff:fav")
-    async def favs(self, it: d.Interaction, _):
-        rows = get_players(it.guild_id, only_fav=True)
-        await it.response.send_message(embed=list_embed(rows, "Favoritos"), ephemeral=True)
-
-    @d.ui.button(label="Estadísticas", emoji="📊", style=d.ButtonStyle.secondary, custom_id="ff:stats")
-    async def stats(self, it: d.Interaction, _):
-        await it.response.send_message(embed=stats_embed(guild_stats(it.guild_id)), ephemeral=True)
-
-    @d.ui.button(label="Borrar", emoji="🗑", style=d.ButtonStyle.danger, custom_id="ff:del")
-    async def delete(self, it: d.Interaction, _):
-        rows = get_players(it.guild_id)
-        if not rows:
-            return await it.response.send_message("No hay jugadores.", ephemeral=True)
-        v = d.ui.View(timeout=120)
-        v.add_item(DeleteSelect(rows))
-        await it.response.send_message("Selecciona a quién borrar:", view=v, ephemeral=True)
-
-class Bot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=d.Intents.default())
-    async def setup_hook(self):
-        init_db()
-        self.add_view(PanelView())
-        if GUILD_ID:
-            g = d.Object(id=int(GUILD_ID))
-            self.tree.copy_global_to(guild=g)
-            await self.tree.sync(guild=g)
-        else:
-            await self.tree.sync()
-    async def on_ready(self):
-        print(f"Conectado como {self.user} ({self.user.id})")
-
-bot = Bot()
-
-@bot.tree.command(name="panel", description="Publica el panel de la escuadra")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def panel(it: d.Interaction):
-    e = d.Embed(title="FF PANEL", description="Gestión de escuadra.\nUsa los botones de abajo.", color=0xFF6A00)
-    e.set_footer(text="Datos guardados en la base del servidor")
-    await it.response.send_message(embed=e, view=PanelView())
-
-@bot.tree.command(name="buscar", description="Busca un jugador por nick o ID")
-@app_commands.describe(q="Nickname o ID")
-async def buscar(it: d.Interaction, q: str):
-    rows = get_players(it.guild_id, search=q)
-    await it.response.send_message(embed=list_embed(rows, f"Resultados: {q}"), ephemeral=True)
-
-@bot.tree.command(name="favorito", description="Marca o desmarca un jugador como favorito")
-@app_commands.describe(pid="Número de registro (#id)")
-async def favorito(it: d.Interaction, pid: int):
-    if not get_player(pid, it.guild_id):
-        return await it.response.send_message("Ese registro no existe.", ephemeral=True)
-    state = toggle_fav(pid, it.guild_id)
-    await it.response.send_message("Marcado como favorito ★" if state else "Favorito quitado", ephemeral=True)
-
-@bot.tree.command(name="borrar", description="Borra un jugador por número de registro")
-@app_commands.describe(pid="Número de registro (#id)")
-async def borrar(it: d.Interaction, pid: int):
-    if not get_player(pid, it.guild_id):
-        return await it.response.send_message("Ese registro no existe.", ephemeral=True)
-    delete_player(pid, it.guild_id)
-    await it.response.send_message(f"Registro #{pid} eliminado.", ephemeral=True)
-
-@bot.tree.command(name="exportar", description="Exporta la escuadra en CSV")
-async def exportar(it: d.Interaction):
-    rows = get_players(it.guild_id)
-    if not rows:
-        return await it.response.send_message("Nada que exportar.", ephemeral=True)
-    lines = ["nick,uid,lvl,rank,kd,wr,fav"]
-    lines += [f"{p['nick']},{p['uid']},{p['lvl']},{p['rank']},{p['kd']},{p['wr']},{p['fav']}" for p in rows]
-    data = "\n".join(lines).encode()
-    await it.response.send_message(file=d.File(io.BytesIO(data), "escuadra.csv"), ephemeral=True)
-
-if __name__ == "__main__":
-    if not TOKEN:
-        print("FALTA TOKEN en .env")
-    else:
-        bot.run(TOKEN)
+    // rejilla
+    ctx.strokeStyle = 'rgba(255,106,0,.05)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 64) { ctx.beginPath(); ctx.moveTo(x,
